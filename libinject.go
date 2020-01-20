@@ -3,7 +3,6 @@ package libinject
 import (
     "os"
     "io"
-    "fmt"
     "log"
     "net"
     "time"
@@ -29,6 +28,10 @@ func (i *Inject) LogInfo(message string) {
     liblog.LogInfo(message, "INFO", liblog.Colors["G1"])
 }
 
+func (i *Inject) LogReplace(message string) {
+    liblog.LogReplace(message, liblog.Colors["G2"])
+}
+
 func (i *Inject) Forward(c net.Conn) {
     defer c.Close()
 
@@ -40,15 +43,35 @@ func (i *Inject) Forward(c net.Conn) {
     defer s.Close()
 
     buffer_size := make([]byte, 65535)
-    length, _ := c.Read(buffer_size)
-
-    if i.LogConnecting {
-        client_payload := string(buffer_size[:length])
-        client_payload_line_1 := strings.Split(client_payload, "\n")[0]
-        client_payload_host_port := strings.Split(client_payload_line_1, " ")[1]
-        client_payload_host_port_split := strings.Split(client_payload_host_port, ":")
-        i.LogInfo("Connecting -> " + client_payload_host_port_split[0] + " port " + client_payload_host_port_split[1])
+    length, err := c.Read(buffer_size)
+    if err != nil {
+        panic(err)
     }
+
+    client_payload := string(buffer_size[:length])
+    client_payload_line_1 := strings.Split(strings.Split(client_payload, "\r\n")[0], " ")
+    client_payload_method := client_payload_line_1[0]
+    client_payload_protocol := client_payload_line_1[2]
+    client_payload_host_port := strings.Split(client_payload_line_1[1], ":")
+    client_payload_host := client_payload_host_port[0]
+    client_payload_port := client_payload_host_port[1]
+
+    logConnectingMessage := "Connecting to " + client_payload_host + " port " + client_payload_port
+    if i.LogConnecting {
+        i.LogInfo(logConnectingMessage)
+    } else {
+        i.LogReplace(logConnectingMessage)
+    }
+
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[method]", client_payload_method)
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[protocol]", client_payload_protocol)
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[host_port]", "[host]:[port]")
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[host]", client_payload_host)
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[port]", client_payload_port)
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[crlf]", "[cr][lf]")
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[lfcr]", "[lf][cr]")
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[cr]", "\r")
+    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[lf]", "\n")
 
     c.Write([]byte("HTTP/1.0 200 Connection established\r\n\r\n"))
     s.Write([]byte(i.ProxyPayload))
@@ -62,7 +85,7 @@ func (i *Inject) Forward(c net.Conn) {
 func (i *Inject) Start() {
     inject, err := net.Listen("tcp", "0.0.0.0:" + i.Port)
     if err != nil {
-        liblog.LogInfo(fmt.Sprintf("Exception\n\n|   %v\n|\n", err), "INFO", liblog.Colors["R1"])
+        liblog.LogException(err, "INFO")
         os.Exit(0)
     }
 
