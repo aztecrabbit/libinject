@@ -16,12 +16,16 @@ var (
 )
 
 type Inject struct {
+    Config *Config
+}
+
+type Config struct {
     Port string
     ProxyHost string
     ProxyPort string
     ProxyPayload string
     ProxyTimeout int
-    LogConnecting bool
+    ShowLog bool
 }
 
 func (i *Inject) LogInfo(message string) {
@@ -35,9 +39,9 @@ func (i *Inject) LogReplace(message string) {
 func (i *Inject) Forward(c net.Conn) {
     defer c.Close()
 
-    s, err := net.DialTimeout("tcp", i.ProxyHost + ":" + i.ProxyPort, time.Duration(i.ProxyTimeout) * time.Second)
+    s, err := net.DialTimeout("tcp", i.Config.ProxyHost + ":" + i.Config.ProxyPort, time.Duration(i.Config.ProxyTimeout) * time.Second)
     if err != nil {
-        log.Printf("%v", err)
+        liblog.LogException(err, "INFO")
         return
     }
     defer s.Close()
@@ -56,34 +60,55 @@ func (i *Inject) Forward(c net.Conn) {
     client_payload_host := client_payload_host_port[0]
     client_payload_port := client_payload_host_port[1]
 
+    if client_payload_method != "CONNECT" {
+        liblog.LogInfo("Method not allowed", "INFO", liblog.Colors["R1"])
+        return
+    }
+
     logConnectingMessage := "Connecting to " + client_payload_host + " port " + client_payload_port
-    if i.LogConnecting {
+
+    if i.Config.ShowLog {
         i.LogInfo(logConnectingMessage)
     } else {
         i.LogReplace(logConnectingMessage)
     }
 
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[method]", client_payload_method)
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[protocol]", client_payload_protocol)
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[host_port]", "[host]:[port]")
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[host]", client_payload_host)
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[port]", client_payload_port)
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[crlf]", "[cr][lf]")
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[lfcr]", "[lf][cr]")
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[cr]", "\r")
-    i.ProxyPayload = strings.ReplaceAll(i.ProxyPayload, "[lf]", "\n")
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[real_raw]", "[raw][crlf][crlf]")
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[raw]", "[method] [host_port] [protocol]")
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[method]", client_payload_method)
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[protocol]", client_payload_protocol)
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[host_port]", "[host]:[port]")
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[host]", client_payload_host)
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[port]", client_payload_port)
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[crlf]", "[cr][lf]")
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[lfcr]", "[lf][cr]")
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[cr]", "\r")
+    i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[lf]", "\n")
 
     c.Write([]byte("HTTP/1.0 200 Connection established\r\n\r\n"))
-    s.Write([]byte(i.ProxyPayload))
+    s.Write([]byte(i.Config.ProxyPayload))
 
     time.Sleep(200 * time.Millisecond)
 
-    go io.Copy(s, c)
-    io.Copy(c, s)
+    done := make(chan bool)
+
+    go i.Handler(s, c, done)
+    go i.Handler(c, s, done)
+
+    <- done
+
+    c.Close()
+    s.Close()
+}
+
+func (i *Inject) Handler(w io.Writer, r io.Reader, done chan bool) {
+    io.Copy(w, r)
+
+    done <- true
 }
 
 func (i *Inject) Start() {
-    inject, err := net.Listen("tcp", "0.0.0.0:" + i.Port)
+    inject, err := net.Listen("tcp", "0.0.0.0:" + i.Config.Port)
     if err != nil {
         liblog.LogException(err, "INFO")
         os.Exit(0)
