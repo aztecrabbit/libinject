@@ -13,11 +13,15 @@ import (
 
 var (
     Loop = true
+    ConfigDefault = &Config{
+        Port: "8989",
+        ProxyHost: "202.152.240.50",
+        ProxyPort: "80",
+        ProxyPayload: "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
+        ProxyTimeout: 10,
+        ShowLog: false,
+    }
 )
-
-type Inject struct {
-    Config *Config
-}
 
 type Config struct {
     Port string
@@ -26,6 +30,10 @@ type Config struct {
     ProxyPayload string
     ProxyTimeout int
     ShowLog bool
+}
+
+type Inject struct {
+    Config *Config
 }
 
 func (i *Inject) LogInfo(message string) {
