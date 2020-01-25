@@ -18,9 +18,9 @@ var (
     DefaultConfig = &Config{
         Type: 2,
         Port: "8989",
-        Proxies: map[string][]string{
-        	"202.152.240.50:80": []string{
-                "*:*",
+        Rules: map[string][]string{
+        	"*:*": []string{
+                "202.152.240.50:80",
             },
         },
         ProxyPayload: "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
@@ -32,7 +32,7 @@ var (
 type Config struct {
     Type int
     Port string
-    Proxies map[string][]string
+    Rules map[string][]string
     ProxyPayload string
     ProxyTimeout int
     ShowLog bool
@@ -97,55 +97,49 @@ func (i *Inject) Forward(c net.Conn) {
     switch i.Config.Type {
         case 2:
             i.TunnelType2(c, request)
-
         case 3:
             i.TunnelType3(c, request)
-
         default:
             liblog.LogInfo("Inject type not found!", "INFO", liblog.Colors["R1"])
     }
-
-    /*
-    if i.Config.Type == 2 {
-        i.TunnelType2(c, request)
-
-    } else if i.Config.Type == 3 {
-        i.TunnelType3(c, request)
-
-    } else {
-        liblog.LogInfo("Inject type not found!", "INFO", liblog.Colors["R1"])
-
-    }
-    */
 }
 
-func (i *Inject) GetProxy(request map[string]string) []string {
-    for proxyHostPort, whitelist_list := range i.Config.Proxies {
-        if len(whitelist_list) == 0 {
-            whitelist_list = []string{
-                "*:*",
-            }
+func (i *Inject) GetProxy(request map[string]string) ([]string, error) {
+    for whitelist, proxyHostPortList := range i.Config.Rules {
+        whitelistHostPort := strings.Split(whitelist, ":")
+        switch len(whitelistHostPort) {
+            case 0:
+                continue
+            case 1:
+                whitelistHostPort = append(whitelistHostPort, "80")
         }
-        for _, whitelist := range whitelist_list {
-            whitelistHostPort := strings.Split(whitelist, ":")
-            if len(whitelistHostPort) != 2 {
-                liblog.LogInfo("Inject whitelist error!", "INFO", liblog.Colors["R1"])
-                return nil
+        if (whitelistHostPort[0] == "*" || strings.Contains(request["host"], whitelistHostPort[0])) &&
+                (whitelistHostPort[1] == "*" || whitelistHostPort[1] == request["port"]) {
+            if len(proxyHostPortList) == 0 {
+                continue
             }
-            if (whitelistHostPort[0] == "*" || strings.Contains(request["host"], whitelistHostPort[0])) &&
-                    (whitelistHostPort[1] == "*" || whitelistHostPort[1] == request["port"]) {
-                return strings.Split(proxyHostPort, ":")
+            proxyHostPort := strings.Split(proxyHostPortList[0], ":")
+            switch len(proxyHostPort) {
+                case 0:
+                    continue
+                case 1:
+                    proxyHostPort = append(proxyHostPort, "80")
             }
+            if len(proxyHostPortList) > 1 {
+                i.Config.Rules[whitelist] = append(proxyHostPortList[1:], proxyHostPortList[0])
+            }
+
+            return proxyHostPort, nil
         }
     }
 
-    return nil
+    return nil, errors.New("Request blocked")
 }
 
 func (i *Inject) ProxyConnect(request map[string]string) (net.Conn, error) {
-    proxyHostPort := i.GetProxy(request)
-    if proxyHostPort == nil {
-        return nil, errors.New("Request blocked")
+    proxyHostPort, err := i.GetProxy(request)
+    if err != nil {
+        return nil, err
     }
 
     if i.Redsocks != nil {
