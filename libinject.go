@@ -7,6 +7,7 @@ import (
     "net"
     "time"
     "errors"
+    "strconv"
     "strings"
 
     "github.com/aztecrabbit/liblog"
@@ -100,24 +101,26 @@ func (i *Inject) Forward(c net.Conn) {
         case 3:
             i.TunnelType3(c, request)
         default:
-            liblog.LogInfo("Inject type not found!", "INFO", liblog.Colors["R1"])
+            liblog.LogInfo("Inject type " + strconv.Itoa(i.Config.Type) + " not found!", "INFO", liblog.Colors["R1"])
     }
 }
 
 func (i *Inject) GetProxy(request map[string]string) ([]string, error) {
     for whitelist, proxyHostPortList := range i.Config.Rules {
+        if strings.Contains(whitelist, "#") || len(proxyHostPortList) == 0 {
+            continue
+        }
+
         whitelistHostPort := strings.Split(whitelist, ":")
         switch len(whitelistHostPort) {
             case 0:
                 continue
             case 1:
-                whitelistHostPort = append(whitelistHostPort, "80")
+                whitelistHostPort = append(whitelistHostPort, "*")
         }
+
         if (whitelistHostPort[0] == "*" || strings.Contains(request["host"], whitelistHostPort[0])) &&
                 (whitelistHostPort[1] == "*" || whitelistHostPort[1] == request["port"]) {
-            if len(proxyHostPortList) == 0 {
-                continue
-            }
             proxyHostPort := strings.Split(proxyHostPortList[0], ":")
             switch len(proxyHostPort) {
                 case 0:
@@ -125,6 +128,14 @@ func (i *Inject) GetProxy(request map[string]string) ([]string, error) {
                 case 1:
                     proxyHostPort = append(proxyHostPort, "80")
             }
+
+            if strings.HasPrefix(proxyHostPort[0], "#") {
+                continue
+            }
+            if strings.HasPrefix(proxyHostPort[0], "*") {
+                return []string{request["host"], request["port"]}, nil
+            }
+
             if len(proxyHostPortList) > 1 {
                 i.Config.Rules[whitelist] = append(proxyHostPortList[1:], proxyHostPortList[0])
             }
@@ -146,11 +157,15 @@ func (i *Inject) ProxyConnect(request map[string]string) (net.Conn, error) {
         i.Redsocks.RuleDirectAdd(proxyHostPort[0])
     }
 
-    liblog.LogReplace(fmt.Sprintf(
-            "Connecting to %s port %s -> %s port %s", proxyHostPort[0], proxyHostPort[1], request["host"], request["port"],
-        ),
-        liblog.Colors["G2"],
+    logConnecting := fmt.Sprintf(
+        "Connecting to %s port %s -> %s port %s", proxyHostPort[0], proxyHostPort[1], request["host"], request["port"],
     )
+
+    if i.Config.ShowLog {
+        liblog.LogInfo(logConnecting, "INFO", liblog.Colors["G1"])
+    }
+
+    liblog.LogReplace(logConnecting, liblog.Colors["G2"])
 
     return net.DialTimeout("tcp", strings.Join(proxyHostPort, ":"), time.Duration(i.Config.ProxyTimeout) * time.Second)
 }
@@ -161,12 +176,6 @@ func (i *Inject) TunnelType2(c net.Conn, request map[string]string) {
         return
     }
     defer s.Close()
-
-    logConnectingMessage := "Connecting to " + request["host"] + " port " + request["port"]
-
-    if i.Config.ShowLog {
-        liblog.LogInfo(logConnectingMessage, "INFO", liblog.Colors["G1"])
-    }
 
     i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[real_raw]", "[raw][crlf][crlf]")
     i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[raw]", "[method] [host_port] [protocol]")
