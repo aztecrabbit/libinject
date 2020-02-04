@@ -18,25 +18,29 @@ import (
 var (
 	Loop = true
 	DefaultConfig = &Config{
-		Type: 2,
+		Type: 0,
 		Port: "8989",
 		Rules: map[string][]string{
 			"*:*": []string{
 				"202.152.240.50:80",
 			},
 		},
-		ProxyPayload: "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
-		ProxyTimeout: 5,
+		Payload: "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
+		Timeout: 5,
+		ServerNameIndication: "twitter.com",
 		ShowLog: false,
 	}
 )
+
+type ClientRequest map[string]string
 
 type Config struct {
 	Type int
 	Port string
 	Rules map[string][]string
-	ProxyPayload string
-	ProxyTimeout int
+	Payload string
+	Timeout int
+	ServerNameIndication string
 	ShowLog bool
 }
 
@@ -62,15 +66,50 @@ func (i *Inject) Start() {
 	}
 }
 
-func (i *Inject) ReadResponse(r net.Conn) string {
-	buffer := make([]byte, 65535)
-	length, _ := r.Read(buffer)
+func (i *Inject) Forward(c net.Conn) {
+	defer c.Close()
 
-	return string(buffer[:length])
+	request, err := i.ExtractClientRequest(c)
+	if err != nil {
+		return
+	}
+
+	switch i.Config.Type {
+		case 0:
+			i.TunnelType0(c, request)
+		case 1:
+			i.TunnelType1(c, request)
+		case 2:
+			i.TunnelType2(c, request)
+		default:
+			liblog.LogInfo("Inject type " + strconv.Itoa(i.Config.Type) + " not found!", "INFO", liblog.Colors["R1"])
+	}
+}
+
+func (i *Inject) ReadResponse(r net.Conn) string {
+	data := ""
+	buffer := make([]byte, 65535)
+
+	for {
+		length, err := r.Read(buffer)
+		if err != nil {
+			break
+		}
+		data += string(buffer[:length])
+
+		if strings.HasSuffix(data, "\r\n\r\n") {
+			break
+		}
+	}
+
+	return data
 }
 
 func (i *Inject) ExtractClientRequest(c net.Conn) (map[string]string, error) {
-	payloadHeaders := strings.Split(i.ReadResponse(c), "\r\n")
+	buffer := make([]byte, 65535)
+	length, _ := c.Read(buffer)
+
+	payloadHeaders := strings.Split(string(buffer[:length]), "\r\n")
 	payloadHeader0 := strings.Split(payloadHeaders[0], " ")
 
 	if len(payloadHeader0) < 3 {
@@ -148,9 +187,16 @@ func (i *Inject) ProxyConnect(request map[string]string) (net.Conn, error) {
 		i.Redsocks.RuleDirectAdd(proxyHostPort[0])
 	}
 
-	logConnecting := fmt.Sprintf(
-		"Connecting to %s port %s -> %s port %s", proxyHostPort[0], proxyHostPort[1], request["host"], request["port"],
-	)
+	var logConnecting string
+
+	if proxyHostPort[0] == request["host"] && proxyHostPort[1] == request["port"] {
+		logConnecting = fmt.Sprintf("Connecting to %s port %s", request["host"], request["port"])
+
+	} else {
+		logConnecting = fmt.Sprintf(
+			"Connecting to %s port %s -> %s port %s", proxyHostPort[0], proxyHostPort[1], request["host"], request["port"],
+		)
+	}
 
 	if i.Config.ShowLog {
 		liblog.LogInfo(logConnecting, "INFO", liblog.Colors["G1"])
@@ -158,53 +204,46 @@ func (i *Inject) ProxyConnect(request map[string]string) (net.Conn, error) {
 
 	liblog.LogReplace(logConnecting, liblog.Colors["G2"])
 
-	return net.DialTimeout("tcp", strings.Join(proxyHostPort, ":"), time.Duration(i.Config.ProxyTimeout) * time.Second)
+	return net.DialTimeout("tcp", strings.Join(proxyHostPort, ":"), time.Duration(i.Config.Timeout) * time.Second)
 }
 
-func (i *Inject) Forward(c net.Conn) {
-	defer c.Close()
-
-	request, err := i.ExtractClientRequest(c)
-	if err != nil {
-		return
-	}
-
-	switch i.Config.Type {
-		case 2:
-			i.TunnelType2(c, request)
-		case 3:
-			i.TunnelType3(c, request)
-		default:
-			liblog.LogInfo("Inject type " + strconv.Itoa(i.Config.Type) + " not found!", "INFO", liblog.Colors["R1"])
-	}
+func (i *Inject) DecodePayload(request ClientRequest) {
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[real_raw]", "[raw][crlf][crlf]")
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[raw]", "[method] [host_port] [protocol]")
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[method]", request["method"])
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[host_port]", "[host]:[port]")
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[host]", request["host"])
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[port]", request["port"])
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[protocol]", request["protocol"])
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[crlf]", "[cr][lf]")
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[lfcr]", "[lf][cr]")
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[cr]", "\r")
+	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[lf]", "\n")
 }
 
-func (i *Inject) TunnelType2(c net.Conn, request map[string]string) {
+func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
 	s, err := i.ProxyConnect(request)
 	if err != nil {
 		return
 	}
 	defer s.Close()
 
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[real_raw]", "[raw][crlf][crlf]")
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[raw]", "[method] [host_port] [protocol]")
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[method]", request["method"])
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[host_port]", "[host]:[port]")
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[host]", request["host"])
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[port]", request["port"])
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[protocol]", request["protocol"])
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[crlf]", "[cr][lf]")
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[lfcr]", "[lf][cr]")
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[cr]", "\r")
-	i.Config.ProxyPayload = strings.ReplaceAll(i.Config.ProxyPayload, "[lf]", "\n")
+	if s.RemoteAddr().String() != request["host"] + ":" + request["port"] {
+		i.DecodePayload(request)
+		s.Write([]byte(i.Config.Payload))
+		if strings.Contains(strings.Split(i.ReadResponse(s), "\r\n")[0], "200") {
+			//
+		}
+	}
 
-	s.Write([]byte(i.Config.ProxyPayload))
-
-	i.ReadResponse(s)
 	i.Handler(c, s)
 }
 
-func (i *Inject) TunnelType3(c net.Conn, request map[string]string) {
+func (i *Inject) TunnelType1(c net.Conn, request ClientRequest) {
+	// TODO: SSL
+}
+
+func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
 	s, err := i.ProxyConnect(request)
 	if err != nil {
 		return
