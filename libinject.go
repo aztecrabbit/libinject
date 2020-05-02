@@ -1,56 +1,62 @@
 package libinject
 
 import (
-	"os"
-	"io"
-	"fmt"
-	"net"
-	"time"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aztecrabbit/liblog"
-	"github.com/aztecrabbit/libutils"
 	"github.com/aztecrabbit/libredsocks"
+	"github.com/aztecrabbit/libutils"
 )
 
 var (
-	Loop = true
+	Loop          = true
 	DefaultConfig = &Config{
-		Type: 0,
-		Port: "8989",
+		Enable: true,
+		Type:   0,
+		Port:   "8989",
 		Rules: map[string][]string{
 			"*:*": []string{
 				"202.152.240.50:80",
 			},
 		},
-		Payload: "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
-		Timeout: 5,
+		Payload:              "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
 		ServerNameIndication: "twitter.com",
-		ShowLog: false,
+		Timeout:              5,
+		ShowLog:              false,
 	}
 )
 
 type ClientRequest map[string]string
 
 type Config struct {
-	Type int
-	Port string
-	Rules map[string][]string
-	Payload string
-	Timeout int
+	Enable               bool
+	Type                 int
+	Port                 string
+	Rules                map[string][]string
+	Payload              string
 	ServerNameIndication string
-	ShowLog bool
+	Timeout              int
+	ShowLog              bool
 }
 
 type Inject struct {
 	Redsocks *libredsocks.Redsocks
-	Config *Config
+	Config   *Config
 }
 
 func (i *Inject) Start() {
-	inject, err := net.Listen("tcp", "0.0.0.0:" + i.Config.Port)
+	if i.Config.Enable == false {
+		return
+	}
+
+	inject, err := net.Listen("tcp", "0.0.0.0:"+i.Config.Port)
 	if err != nil {
 		liblog.LogException(err, "INFO")
 		os.Exit(0)
@@ -62,7 +68,7 @@ func (i *Inject) Start() {
 			panic(err)
 		}
 
-		go  i.Forward(client)
+		go i.Forward(client)
 	}
 }
 
@@ -75,14 +81,14 @@ func (i *Inject) Forward(c net.Conn) {
 	}
 
 	switch i.Config.Type {
-		case 0:
-			i.TunnelType0(c, request)
-		case 1:
-			i.TunnelType1(c, request)
-		case 2:
-			i.TunnelType2(c, request)
-		default:
-			liblog.LogInfo("Inject type " + strconv.Itoa(i.Config.Type) + " not found!", "INFO", liblog.Colors["R1"])
+	case 0:
+		i.TunnelType0(c, request)
+	case 1:
+		i.TunnelType1(c, request)
+	case 2:
+		i.TunnelType2(c, request)
+	default:
+		liblog.LogInfo("Inject type "+strconv.Itoa(i.Config.Type)+" not found!", "INFO", liblog.Colors["R1"])
 	}
 }
 
@@ -156,7 +162,7 @@ func (i *Inject) GetProxy(request map[string]string) ([]string, error) {
 		}
 
 		if (whitelistHostPort[0] == "*" || strings.Contains(request["host"], whitelistHostPort[0])) &&
-				(whitelistHostPort[1] == "*" || whitelistHostPort[1] == request["port"]) {
+			(whitelistHostPort[1] == "*" || whitelistHostPort[1] == request["port"]) {
 			proxyHostPort := i.GetProxyFromRule(whitelistAddress)
 
 			if strings.HasPrefix(proxyHostPort[0], "#") {
@@ -204,7 +210,7 @@ func (i *Inject) ProxyConnect(request map[string]string) (net.Conn, error) {
 
 	liblog.LogReplace(logConnecting, liblog.Colors["G2"])
 
-	return net.DialTimeout("tcp", strings.Join(proxyHostPort, ":"), time.Duration(i.Config.Timeout) * time.Second)
+	return net.DialTimeout("tcp", strings.Join(proxyHostPort, ":"), time.Duration(i.Config.Timeout)*time.Second)
 }
 
 func (i *Inject) DecodePayload(request ClientRequest) {
@@ -228,7 +234,7 @@ func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
 	}
 	defer s.Close()
 
-	if s.RemoteAddr().String() != request["host"] + ":" + request["port"] {
+	if s.RemoteAddr().String() != request["host"]+":"+request["port"] {
 		i.DecodePayload(request)
 		s.Write([]byte(i.Config.Payload))
 		if strings.Contains(strings.Split(i.ReadResponse(s), "\r\n")[0], "200") {
@@ -241,6 +247,32 @@ func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
 
 func (i *Inject) TunnelType1(c net.Conn, request ClientRequest) {
 	// TODO: SSL
+
+	/**
+	proxyAddress, err := i.GetProxy(request)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	println("connect", strings.Join(proxyAddress, ":"))
+
+	s, err := tls.Dial("tcp", strings.Join(proxyAddress, ":"), &tls.Config{
+		ServerName:         i.Config.ServerNameIndication,
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		fmt.Printf("%v - %v\n", s, err)
+		return
+	}
+	defer s.Close()
+
+	s.Handshake()
+
+	println("test")
+
+	i.Handler(c, s)
+	**/
 }
 
 func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
@@ -261,7 +293,7 @@ func (i *Inject) Handler(c net.Conn, s net.Conn) {
 	go i.Handle(s, c, done)
 	go i.Handle(c, s, done)
 
-	<- done
+	<-done
 }
 
 func (i *Inject) Handle(w io.Writer, r io.Reader, done chan bool) {
