@@ -28,6 +28,7 @@ var (
 		},
 		Payload:              "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
 		ServerNameIndication: "twitter.com",
+		MeekType:             0,
 		Timeout:              5,
 		ShowLog:              false,
 	}
@@ -42,6 +43,7 @@ type Config struct {
 	Rules                map[string][]string
 	Payload              string
 	ServerNameIndication string
+	MeekType             int
 	Timeout              int
 	ShowLog              bool
 }
@@ -150,7 +152,7 @@ func (i *Inject) GetProxyFromRule(w string) []string {
 	return strings.Split(proxyAddress, ":")
 }
 
-func (i *Inject) GetProxy(request map[string]string) ([]string, error) {
+func (i *Inject) GetProxy(request map[string]string) (string, int, error) {
 	for whitelistAddress, proxyAddressList := range i.Config.Rules {
 		if strings.Contains(whitelistAddress, "#") || len(proxyAddressList) == 0 {
 			continue
@@ -176,31 +178,26 @@ func (i *Inject) GetProxy(request map[string]string) ([]string, error) {
 				proxyHostPort[1] = request["port"]
 			}
 
-			return proxyHostPort, nil
+			return proxyHostPort[0], libutils.Atoi(proxyHostPort[1]), nil
 		}
 	}
 
-	return nil, errors.New("Request blocked")
+	return "", 0, errors.New("Request blocked")
 }
 
-func (i *Inject) ProxyConnect(request map[string]string) (net.Conn, error) {
-	proxyHostPort, err := i.GetProxy(request)
-	if err != nil {
-		return nil, err
-	}
-
+func (i *Inject) ProxyConnect(proxyHost string, proxyPort int, request map[string]string) (net.Conn, error) {
 	if i.Redsocks != nil {
-		i.Redsocks.RuleDirectAdd(proxyHostPort[0])
+		i.Redsocks.RuleDirectAdd(proxyHost)
 	}
 
 	var logConnecting string
 
-	if proxyHostPort[0] == request["host"] && proxyHostPort[1] == request["port"] {
+	if proxyHost == request["host"] && strconv.Itoa(proxyPort) == request["port"] {
 		logConnecting = fmt.Sprintf("Connecting to %s port %s", request["host"], request["port"])
 
 	} else {
 		logConnecting = fmt.Sprintf(
-			"Connecting to %s port %s -> %s port %s", proxyHostPort[0], proxyHostPort[1], request["host"], request["port"],
+			"Connecting to %s port %d -> %s port %s", proxyHost, proxyPort, request["host"], request["port"],
 		)
 	}
 
@@ -210,7 +207,7 @@ func (i *Inject) ProxyConnect(request map[string]string) (net.Conn, error) {
 
 	liblog.LogReplace(logConnecting, liblog.Colors["G2"])
 
-	return net.DialTimeout("tcp", strings.Join(proxyHostPort, ":"), time.Duration(i.Config.Timeout)*time.Second)
+	return net.DialTimeout("tcp", proxyHost+":"+strconv.Itoa(proxyPort), time.Duration(i.Config.Timeout)*time.Second)
 }
 
 func (i *Inject) DecodePayload(request ClientRequest) {
@@ -228,7 +225,12 @@ func (i *Inject) DecodePayload(request ClientRequest) {
 }
 
 func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
-	s, err := i.ProxyConnect(request)
+	proxyHost, proxyPort, err := i.GetProxy(request)
+	if err != nil {
+		return
+	}
+
+	s, err := i.ProxyConnect(proxyHost, proxyPort, request)
 	if err != nil {
 		return
 	}
@@ -276,11 +278,21 @@ func (i *Inject) TunnelType1(c net.Conn, request ClientRequest) {
 }
 
 func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
-	s, err := i.ProxyConnect(request)
+	proxyHost, proxyPort, err := i.GetProxy(request)
+	if err != nil {
+		return
+	}
+
+	s, err := i.ProxyConnect(proxyHost, proxyPort, request)
 	if err != nil {
 		return
 	}
 	defer s.Close()
+
+	if i.Config.MeekType == 1 {
+		s.Write([]byte("POST / HTTP/1.1\r\nHost: " + proxyHost + "\r\n\r\n"))
+		s.Read(make([]byte, 65535))
+	}
 
 	i.Handler(c, s)
 }
