@@ -210,18 +210,22 @@ func (i *Inject) ProxyConnect(proxyHost string, proxyPort int, request map[strin
 	return net.DialTimeout("tcp", proxyHost+":"+strconv.Itoa(proxyPort), time.Duration(i.Config.Timeout)*time.Second)
 }
 
-func (i *Inject) DecodePayload(request ClientRequest) {
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[real_raw]", "[raw][crlf][crlf]")
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[raw]", "[method] [host_port] [protocol]")
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[method]", request["method"])
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[host_port]", "[host]:[port]")
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[host]", request["host"])
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[port]", request["port"])
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[protocol]", request["protocol"])
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[crlf]", "[cr][lf]")
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[lfcr]", "[lf][cr]")
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[cr]", "\r")
-	i.Config.Payload = strings.ReplaceAll(i.Config.Payload, "[lf]", "\n")
+func (i *Inject) DecodePayload(request ClientRequest, payload string) string {
+	var payloadDecoded = payload
+
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[real_raw]", "[raw][crlf][crlf]")
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[raw]", "[method] [host_port] [protocol]")
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[method]", request["method"])
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[host_port]", "[host]:[port]")
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[host]", request["host"])
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[port]", request["port"])
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[protocol]", request["protocol"])
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[crlf]", "[cr][lf]")
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[lfcr]", "[lf][cr]")
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[cr]", "\r")
+	payloadDecoded = strings.ReplaceAll(payloadDecoded, "[lf]", "\n")
+
+	return payloadDecoded
 }
 
 func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
@@ -237,8 +241,11 @@ func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
 	defer s.Close()
 
 	if s.RemoteAddr().String() != request["host"]+":"+request["port"] {
-		i.DecodePayload(request)
-		s.Write([]byte(i.Config.Payload))
+		for _, payload := range strings.Split(i.Config.Payload, "[split]") {
+			var payloadDecoded = i.DecodePayload(request, payload)
+			s.Write([]byte(payloadDecoded))
+		}
+
 		if strings.Contains(strings.Split(i.ReadResponse(s), "\r\n")[0], "200") {
 			//
 		}
@@ -277,6 +284,43 @@ func (i *Inject) TunnelType1(c net.Conn, request ClientRequest) {
 	**/
 }
 
+/*
+func (i *Inject) ExtractRequest(c net.Conn, s net.Conn) {
+	buffer := make([]byte, 65535)
+	length, _ := c.Read(buffer)
+	// s.Write([]byte(buffer[:length]))
+	// s.Write([]byte("POST / HTTP/1.1\r\nHost: www.pubgmobile.com\r\nContent-Length: 0\r\n\r\n"))
+	// buffer := make([]byte, 65535)
+	// length, _ := s.Read(buffer)
+	// println(string(buffer[:length]))
+
+	data := strings.Split(string(buffer[:length]), "\r\n\r\n")
+
+	headers := strings.Split(data[0], "\r\n")
+	// headers = headers[1:]
+	// headers = append([]string{
+	// 	"POST / HTTP/1.1",
+	// 	"Host: www.pubgmobile.com",
+	// 	"Content-Length: 0",
+	// }, headers...)
+
+	fmt.Println(headers)
+	// return
+
+	request := strings.Join(headers, "\r\n") + "\r\n\r\n" + data[1] + "\r\n\r\n"
+
+	// fmt.Println(request)
+
+	s.Write([]byte("POST / HTTP/1.1\r\nHost: www.pubgmobile.com\r\n"))
+	// time.Sleep(1 * time.Second)
+	s.Write([]byte(request))
+
+	b := make([]byte, 65535)
+	l, _ := s.Read(b)
+	println(string(b[:l]))
+}
+*/
+
 func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
 	proxyHost, proxyPort, err := i.GetProxy(request)
 	if err != nil {
@@ -295,6 +339,18 @@ func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
 	}
 
 	i.Handler(c, s)
+
+	/*
+		c.Write([]byte("HTTP/1.0 200 Connection established\r\n\r\n"))
+		i.ExtractRequest(c, s)
+
+		done := make(chan bool)
+
+		go i.Handle(s, c, done)
+		go i.Handle(c, s, done)
+
+		<-done
+	*/
 }
 
 func (i *Inject) Handler(c net.Conn, s net.Conn) {
