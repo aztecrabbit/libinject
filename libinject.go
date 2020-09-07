@@ -1,6 +1,7 @@
 package libinject
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -255,33 +256,24 @@ func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
 }
 
 func (i *Inject) TunnelType1(c net.Conn, request ClientRequest) {
-	// TODO: SSL
-
-	/**
-	proxyAddress, err := i.GetProxy(request)
+	proxyHost, proxyPort, err := i.GetProxy(request)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err.Error())
 		return
 	}
 
-	println("connect", strings.Join(proxyAddress, ":"))
-
-	s, err := tls.Dial("tcp", strings.Join(proxyAddress, ":"), &tls.Config{
+	s, err := tls.Dial("tcp", proxyHost+":"+strconv.Itoa(proxyPort), &tls.Config{
 		ServerName:         i.Config.ServerNameIndication,
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		fmt.Printf("%v - %v\n", s, err)
+		fmt.Printf("%v - %v\n", s, err.Error())
 		return
 	}
 	defer s.Close()
 
 	s.Handshake()
-
-	println("test")
-
 	i.Handler(c, s)
-	**/
 }
 
 /*
