@@ -24,11 +24,11 @@ var (
 		Port:   "8989",
 		Rules: map[string][]string{
 			"*:*": []string{
-				"202.152.240.50:80",
+				"*",
 			},
 		},
 		Payload:              "[raw][crlf]Host: t.co[crlf]Host: [crlf][crlf]",
-		ServerNameIndication: "twitter.com",
+		ServerNameIndication: "instagram.fcgk8-1.fna.fbcdn.net",
 		MeekType:             0,
 		Timeout:              5,
 		ShowLog:              false,
@@ -174,7 +174,7 @@ func (i *Inject) GetProxy(request map[string]string) (string, int, error) {
 			if len(proxyHostPort) == 1 {
 				proxyHostPort = append(proxyHostPort, "80")
 			}
-			if strings.Contains(proxyHostPort[0], "*") {
+			if strings.Contains(proxyHostPort[0], "*") || proxyHostPort[0] == "" {
 				proxyHostPort[0] = request["host"]
 				proxyHostPort[1] = request["port"]
 			}
@@ -186,7 +186,7 @@ func (i *Inject) GetProxy(request map[string]string) (string, int, error) {
 	return "", 0, errors.New("Request blocked")
 }
 
-func (i *Inject) ProxyConnect(proxyHost string, proxyPort int, request map[string]string) (net.Conn, error) {
+func (i *Inject) NewConnection(proxyHost string, proxyPort int, request map[string]string) (net.Conn, error) {
 	if i.Redsocks != nil {
 		i.Redsocks.RuleDirectAdd(proxyHost)
 	}
@@ -235,7 +235,7 @@ func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
 		return
 	}
 
-	s, err := i.ProxyConnect(proxyHost, proxyPort, request)
+	s, err := i.NewConnection(proxyHost, proxyPort, request)
 	if err != nil {
 		return
 	}
@@ -258,60 +258,23 @@ func (i *Inject) TunnelType0(c net.Conn, request ClientRequest) {
 func (i *Inject) TunnelType1(c net.Conn, request ClientRequest) {
 	proxyHost, proxyPort, err := i.GetProxy(request)
 	if err != nil {
-		fmt.Println(err.Error())
 		return
 	}
 
-	s, err := tls.Dial("tcp", proxyHost+":"+strconv.Itoa(proxyPort), &tls.Config{
+	conn, err := i.NewConnection(proxyHost, proxyPort, request)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	s := tls.Client(conn, &tls.Config{
 		ServerName:         i.Config.ServerNameIndication,
 		InsecureSkipVerify: true,
 	})
-	if err != nil {
-		fmt.Printf("%v - %v\n", s, err.Error())
-		return
-	}
-	defer s.Close()
 
 	s.Handshake()
 	i.Handler(c, s)
 }
-
-/*
-func (i *Inject) ExtractRequest(c net.Conn, s net.Conn) {
-	buffer := make([]byte, 65535)
-	length, _ := c.Read(buffer)
-	// s.Write([]byte(buffer[:length]))
-	// s.Write([]byte("POST / HTTP/1.1\r\nHost: www.pubgmobile.com\r\nContent-Length: 0\r\n\r\n"))
-	// buffer := make([]byte, 65535)
-	// length, _ := s.Read(buffer)
-	// println(string(buffer[:length]))
-
-	data := strings.Split(string(buffer[:length]), "\r\n\r\n")
-
-	headers := strings.Split(data[0], "\r\n")
-	// headers = headers[1:]
-	// headers = append([]string{
-	// 	"POST / HTTP/1.1",
-	// 	"Host: www.pubgmobile.com",
-	// 	"Content-Length: 0",
-	// }, headers...)
-
-	fmt.Println(headers)
-	// return
-
-	request := strings.Join(headers, "\r\n") + "\r\n\r\n" + data[1] + "\r\n\r\n"
-
-	// fmt.Println(request)
-
-	s.Write([]byte("POST / HTTP/1.1\r\nHost: www.pubgmobile.com\r\n"))
-	// time.Sleep(1 * time.Second)
-	s.Write([]byte(request))
-
-	b := make([]byte, 65535)
-	l, _ := s.Read(b)
-	println(string(b[:l]))
-}
-*/
 
 func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
 	proxyHost, proxyPort, err := i.GetProxy(request)
@@ -319,7 +282,7 @@ func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
 		return
 	}
 
-	s, err := i.ProxyConnect(proxyHost, proxyPort, request)
+	s, err := i.NewConnection(proxyHost, proxyPort, request)
 	if err != nil {
 		return
 	}
@@ -331,18 +294,6 @@ func (i *Inject) TunnelType2(c net.Conn, request ClientRequest) {
 	}
 
 	i.Handler(c, s)
-
-	/*
-		c.Write([]byte("HTTP/1.0 200 Connection established\r\n\r\n"))
-		i.ExtractRequest(c, s)
-
-		done := make(chan bool)
-
-		go i.Handle(s, c, done)
-		go i.Handle(c, s, done)
-
-		<-done
-	*/
 }
 
 func (i *Inject) Handler(c net.Conn, s net.Conn) {
